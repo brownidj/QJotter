@@ -1,0 +1,11 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">Notefile</title>
+  <desc id="desc">A cream note with a folded corner and three writing strokes on deep green.</desc>
+  <rect id="tile" width="896" height="896" fill="#235B4E" x="64" y="64" rx="200" />
+  <g id="note" transform="translate(64 64) scale(0.875)">
+    <path fill="#FFFDF5" d="M324 200H604L764 360V748C764 790 738 816 696 816H324C282 816 256 790 256 748V268C256 226 282 200 324 200Z" />
+    <path fill="#B7D4C3" d="M604 200V304C604 336 628 360 660 360H764Z" />
+    <path fill="none" stroke="#235B4E" stroke-width="48" stroke-linecap="round" d="M352 440H652M352 552H652M352 664H540" />
+  </g>
+</svg>
