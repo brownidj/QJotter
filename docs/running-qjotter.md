@@ -78,6 +78,16 @@ flutter devices
 flutter run -d YOUR_SIMULATOR_ID
 ```
 
+## Writing notes
+
+The first letter of a note, a new paragraph, or a sentence after a full stop and a space is capitalised as you type. Sentence endings with `!` and `?` are supported too. Pasted text and existing notes keep their original capitalisation. Dots within URLs and decimal numbers do not start a new sentence.
+
+## Open a web address in a note
+
+Web addresses appear blue and underlined as you type, while remaining editable plain text. On macOS, hovering over a link shows a pointing hand and a tooltip. Double-click the address to open it in your default browser. On iPhone or Android, double-tap it, then choose **Yes** in the confirmation dialog. Choose **No** to stay in QJotter. Single taps and ordinary text selection continue to work normally.
+
+Addresses beginning with `http://`, `https://`, or `www.` are supported, as are bare domains such as `example.com/path` (opened using HTTPS). Wrapped and scrolled addresses are supported. Email addresses and non-web schemes are left as ordinary text. Opening a link does not change the note.
+
 ## Connect to the notes server
 
 On the same local network, open QJotter **Settings**:

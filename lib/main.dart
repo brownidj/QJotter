@@ -9,6 +9,8 @@ import 'package:intl/intl.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'note_actions.dart';
+import 'note_links.dart';
+import 'sentence_capitalization.dart';
 import 'notes_store.dart';
 import 'sqlite_notes_store.dart';
 import 'app_services.dart';
@@ -48,10 +50,12 @@ class QJotterApp extends StatelessWidget {
     super.key,
     required this.store,
     this.actions = const PlatformNoteActions(),
+    this.linkOpener = const BrowserNoteLinkOpener(),
     this.services,
   });
   final NotesStore store;
   final NoteActions actions;
+  final NoteLinkOpener linkOpener;
   final AppServices? services;
 
   @override
@@ -65,7 +69,12 @@ class QJotterApp extends StatelessWidget {
         insetPadding: EdgeInsets.fromLTRB(16, 5, 16, 64),
       ),
     ),
-    home: QuickCapturePage(store: store, actions: actions, services: services),
+    home: QuickCapturePage(
+      store: store,
+      actions: actions,
+      services: services,
+      linkOpener: linkOpener,
+    ),
   );
 }
 
@@ -74,10 +83,12 @@ class QuickCapturePage extends StatefulWidget {
     super.key,
     required this.store,
     required this.actions,
+    this.linkOpener = const BrowserNoteLinkOpener(),
     this.services,
   });
   final NotesStore store;
   final NoteActions actions;
+  final NoteLinkOpener linkOpener;
   final AppServices? services;
   @override
   State<QuickCapturePage> createState() => _QuickCapturePageState();
@@ -103,6 +114,7 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
   bool _showingList = false;
   bool _sidebarVisible = true;
   bool _actionBusy = false;
+  bool _openingLink = false;
   bool _confirmingDeletion = false;
   bool _searching = false;
   String _query = '';
@@ -130,7 +142,7 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
   void initState() {
     super.initState();
     _notes = widget.store.initialSnapshot;
-    _text = TextEditingController(text: _notes.selected.text);
+    _text = NoteEditingController(text: _notes.selected.text);
     _notebookRevision = widget.services?.notebookRevision ?? 0;
     _profile = widget.services?.store.profile;
     widget.services?.addListener(_servicesChanged);
@@ -238,6 +250,64 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
     _pendingSave = widget.store is SqliteNotesStore
         ? save()
         : _pendingSave.then((_) => save());
+  }
+
+  Future<void> _openNoteLink(Uri address) async {
+    if (_openingLink) return;
+    _openingLink = true;
+    try {
+      if (!_isDesktop) {
+        _editorFocus.unfocus();
+        final accepted = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Open link?'),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 260),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Would you like to open this address in your default browser?',
+                    ),
+                    const SizedBox(height: 12),
+                    SelectableText(address.toString()),
+                  ],
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                autofocus: true,
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('No'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Yes'),
+              ),
+            ],
+          ),
+        );
+        if (accepted != true || !mounted) return;
+      }
+      if (!await widget.linkOpener.open(address)) {
+        throw StateError('Browser unavailable');
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not open this address in your browser.'),
+            showCloseIcon: true,
+          ),
+        );
+      }
+    } finally {
+      _openingLink = false;
+    }
   }
 
   void _editNote(String text) {
@@ -372,7 +442,7 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
 
   Future<void> _performAction(_NoteAction action) async {
     if (action == _NoteAction.delete) {
-      _deleteNote();
+      _deleteNote(fromList: _hasHighlightedNote);
       return;
     }
     final note = _notes.selected;
@@ -620,15 +690,13 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
         const SizedBox(height: 8),
         Text(
           _isDesktop
-              ? 'Click a note in the list to highlight it. Click the trash button at the top or press Delete or Backspace to delete it. Double-click the note or press Enter to open it for editing.'
-              : 'Hold a note in the list to highlight it, then tap the trash button at the top to delete it. Tap a note to open it.',
+              ? 'Click a note in the list to highlight it. Choose Delete in the … menu or press Delete or Backspace to delete it. Double-click the note or press Enter to open it for editing.'
+              : 'Hold a note in the list to highlight it, then choose Delete in the … menu to delete it. Tap a note to open it.',
         ),
         const SizedBox(height: 8),
         const Text(
-          'The trash button is disabled when no note is highlighted in the visible list.',
-        ),
-        const SizedBox(height: 8),
-        const Text(
+          'Web addresses appear blue and underlined. Double-click a web address on a desktop to open it in your default browser. '
+          'On a phone, double-tap the address, then choose Yes to open it or No to stay in QJotter. '
           'The small green light at the top left means all notes are saved to the server. '
           'An orange light shows how many records are waiting to sync, including deletions. '
           'Empty new drafts are not counted. A grey light means syncing has not been confirmed. '
@@ -707,13 +775,6 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
               onPressed: _openSettings,
               icon: const Icon(Icons.settings_outlined),
             ),
-          IconButton(
-            tooltip: 'Delete highlighted note',
-            icon: const Icon(Icons.delete_outline),
-            onPressed: _hasHighlightedNote
-                ? () => _deleteNote(fromList: true)
-                : null,
-          ),
           Tooltip(
             message: _showingHelp ? 'Return to note' : 'Help',
             child: TextButton(
@@ -782,24 +843,35 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
                                     24,
                                     16,
                                   ),
-                                  child: TextField(
+                                  child: NoteLinkListener(
                                     controller: _text,
-                                    focusNode: _editorFocus,
-                                    autofocus: true,
-                                    expands: true,
-                                    minLines: null,
-                                    maxLines: null,
-                                    textAlignVertical: TextAlignVertical.top,
-                                    keyboardType: TextInputType.multiline,
-                                    style: const TextStyle(
-                                      fontSize: 18,
-                                      height: 1.5,
+                                    onOpen: (address) =>
+                                        unawaited(_openNoteLink(address)),
+                                    child: TextField(
+                                      mouseCursor: MouseCursor.defer,
+                                      controller: _text,
+                                      focusNode: _editorFocus,
+                                      autofocus: true,
+                                      expands: true,
+                                      minLines: null,
+                                      maxLines: null,
+                                      textAlignVertical: TextAlignVertical.top,
+                                      keyboardType: TextInputType.multiline,
+                                      textCapitalization:
+                                          TextCapitalization.sentences,
+                                      inputFormatters: const [
+                                        SentenceCapitalizationFormatter(),
+                                      ],
+                                      style: const TextStyle(
+                                        fontSize: 18,
+                                        height: 1.5,
+                                      ),
+                                      decoration: const InputDecoration(
+                                        hintText: 'Start typing a note…',
+                                        border: InputBorder.none,
+                                      ),
+                                      onChanged: _editNote,
                                     ),
-                                    decoration: const InputDecoration(
-                                      hintText: 'Start typing a note…',
-                                      border: InputBorder.none,
-                                    ),
-                                    onChanged: _editNote,
                                   ),
                                 ),
                                 if (!wide) _noteList() else const SizedBox(),

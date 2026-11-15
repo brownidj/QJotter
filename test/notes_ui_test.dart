@@ -115,28 +115,13 @@ void main() {
         final store = TestNotesStore(first.add(other));
         await tester.pumpWidget(QJotterApp(store: store));
         await tester.pumpAndSettle();
-        expect(
-          tester
-              .widget<IconButton>(
-                find.widgetWithIcon(IconButton, Icons.delete_outline),
-              )
-              .onPressed,
-          isNull,
-        );
+        expect(find.byIcon(Icons.delete_outline), findsNothing);
         await tester.tap(find.textContaining('2 notes ·'));
         await tester.pumpAndSettle();
         await tester.tap(find.byKey(ValueKey('note-${first.selectedId}')));
         await tester.pumpAndSettle();
         expect(find.byKey(const ValueKey('notes-list')), findsOneWidget);
-        expect(find.byTooltip('Delete highlighted note'), findsOneWidget);
-        expect(
-          tester
-              .widget<IconButton>(
-                find.widgetWithIcon(IconButton, Icons.delete_outline),
-              )
-              .onPressed,
-          isNotNull,
-        );
+        expect(find.byIcon(Icons.delete_outline), findsNothing);
         expect(
           find.descendant(
             of: find.byKey(const ValueKey('notes-list')),
@@ -198,14 +183,7 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byTooltip('Help'));
       await tester.pumpAndSettle();
-      expect(
-        tester
-            .widget<IconButton>(
-              find.widgetWithIcon(IconButton, Icons.delete_outline),
-            )
-            .onPressed,
-        isNull,
-      );
+      expect(find.byIcon(Icons.delete_outline), findsNothing);
       await tester.sendKeyEvent(LogicalKeyboardKey.delete);
       await tester.pumpAndSettle();
       expect(find.text('Note deleted'), findsNothing);
@@ -242,7 +220,7 @@ void main() {
   );
 
   testWidgets(
-    'Holding a filtered list entry enables its trash button without clearing search',
+    'A highlighted filtered entry can be deleted through the menu without clearing search',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(390, 700));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -260,8 +238,8 @@ void main() {
       await tester.pumpAndSettle();
       await tester.longPress(find.byKey(ValueKey('note-${first.selectedId}')));
       await tester.pumpAndSettle();
-      await tester.tap(find.byTooltip('Delete highlighted note'));
-      await tester.pumpAndSettle();
+      expect(find.byIcon(Icons.delete_outline), findsNothing);
+      await menu(tester, 'Delete');
       expect(find.text('Are you sure?'), findsOneWidget);
       await tester.tap(find.widgetWithText(FilledButton, 'Delete'));
       await tester.pumpAndSettle();
