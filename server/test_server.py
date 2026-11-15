@@ -70,6 +70,39 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(any(n['text'] == 'Device A' for n in result['notes']))
         self.assertEqual(self.sync(self.alice, [stale]), result)
 
+    def test_empty_drafts_are_not_created_and_clearing_deletes_saved_note(self):
+        for index, text in enumerate(('', ' \t\n', '\u00a0\u2003')):
+            result = self.sync(self.alice, [change(text, mutation=f'blank-{index}')])
+            self.assertEqual(result['notes'], [])
+        self.sync(self.alice, [change('Saved content', mutation='content')])
+        result = self.sync(self.alice, [change(' \n', 1, 'clear')])
+        self.assertTrue(result['notes'][0]['deleted'])
+        self.assertEqual(len(result['notes']), 1)
+        self.assertEqual(self.sync(self.alice, [change(' \n', 1, 'clear')]), result)
+
+    def test_stale_empty_edit_does_not_delete_other_devices_newer_content(self):
+        self.sync(self.alice, [change('Original')])
+        self.sync(self.alice, [change('Newer content', 1, 'newer-content')])
+        result = self.sync(self.alice, [change('', 1, 'stale-clear')])
+        self.assertEqual(len(result['notes']), 1)
+        self.assertEqual(result['notes'][0]['text'], 'Newer content')
+        self.assertFalse(result['notes'][0]['deleted'])
+
+    def test_conflict_retry_returns_the_same_resolution(self):
+        self.sync(self.alice, [change('Original')])
+        self.sync(self.alice, [change('Other device', 1, 'other')])
+        stale = change('My edit', 1, 'mine')
+        first = self.sync(self.alice, [stale])
+        resolution = first['resolved'][0]
+        self.assertEqual(resolution['sourceId'], stale['id'])
+        self.assertNotEqual(resolution['noteId'], stale['id'])
+        self.assertEqual(self.sync(self.alice, [stale])['resolved'], first['resolved'])
+        continued = {**change('My continued edit', resolution['version'], 'continued'),
+                     'id': resolution['noteId']}
+        result = self.sync(self.alice, [continued])
+        self.assertEqual(len(result['notes']), 2)
+        self.assertTrue(any(n['text'] == 'My continued edit' for n in result['notes']))
+
     def test_stale_delete_does_not_erase_newer_edit(self):
         self.sync(self.alice, [change()])
         self.sync(self.alice, [change('Newer', 1, 'newer')])

@@ -23,6 +23,21 @@ class ManagementTests(unittest.TestCase):
                        'backups_enabled': True, 'backup_hour': 3, 'backup_minute': 0,
                        'backup_retention_days': 30}
 
+    def test_server_prevents_idle_sleep_only_while_running(self):
+        config = {**self.config, 'listen_host': '0.0.0.0', 'port': 8767,
+                  'certificate': 'public.pem', 'private_key': 'private.pem',
+                  'allow_registration': False}
+        plist = self.root / 'agents/server.plist'
+        with patch.object(management, 'PLIST', plist), patch.object(management, 'run', return_value=Mock(returncode=0)):
+            management.write_plist(config)
+            data = plistlib.loads(plist.read_bytes())
+            self.assertEqual(data['ProgramArguments'][:3], ['/usr/bin/caffeinate', '-i', 'python3'])
+            self.assertTrue(data['KeepAlive'])
+            self.assertNotIn('-d', data['ProgramArguments'])
+            management.write_plist({**config, 'keep_awake': False})
+            data = plistlib.loads(plist.read_bytes())
+            self.assertEqual(data['ProgramArguments'][0], 'python3')
+
     def test_backup_restores_committed_wal_and_accounts_with_private_permissions(self):
         api = Api(self.config['database'], allow_registration=True)
         user = api.handle('register', {'email': 'alice@example.test', 'password': 'test passphrase only'})

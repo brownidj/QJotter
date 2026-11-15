@@ -186,6 +186,8 @@ void main() {
     expect(store.initialSnapshot.selected.text, 'Newer offline edit');
     expect(store.pendingChanges(), hasLength(1));
     final latest = store.pendingChanges();
+    expect(latest.single['baseVersion'], 1);
+    expect(latest.single['mutationId'], isNot(sent.single['mutationId']));
     store.applySync({
       'notes': [
         {...latest.single, 'version': 2},
@@ -194,6 +196,291 @@ void main() {
     }, latest);
     expect(store.pendingChanges(), isEmpty);
   });
+
+  test(
+    'An acknowledged upload preserves a newer edit across restart',
+    () async {
+      final store = await open();
+      store.useProfile('alice');
+      await store.save(store.initialSnapshot.editSelected('Before upload'));
+      final sent = store.pendingChanges();
+      final id = sent.single['id'];
+      await store.save(
+        store.initialSnapshot.editSelected('Continued typing 日本語 📝'),
+      );
+      final newerMutation = store.pendingChanges().single['mutationId'];
+      final reply = {
+        'notes': [
+          {...sent.single, 'version': 7},
+        ],
+        'acknowledged': [sent.single['mutationId']],
+      };
+      store.applySync(reply, sent);
+      // Replaying an acknowledgement must not clear the newer pending edit.
+      store.applySync(reply, sent);
+      final reopened = await open();
+      reopened.useProfile('alice');
+      expect(reopened.initialSnapshot.selectedId, id);
+      expect(reopened.initialSnapshot.selected.text, 'Continued typing 日本語 📝');
+      expect(reopened.pendingChanges().single['baseVersion'], 7);
+      expect(reopened.pendingChanges().single['mutationId'], newerMutation);
+    },
+  );
+
+  test(
+    'Deleting during an upload keeps the deletion and advances its base',
+    () async {
+      final store = await open();
+      await store.save(
+        store.initialSnapshot.editSelected('Delete during upload'),
+      );
+      final sent = store.pendingChanges();
+      await store.save(store.initialSnapshot.removeSelected());
+      final deletionMutation = store.pendingChanges().single['mutationId'];
+      store.applySync({
+        'notes': [
+          {...sent.single, 'version': 8},
+        ],
+        'acknowledged': [sent.single['mutationId']],
+      }, sent);
+      expect(store.initialSnapshot.notes, isEmpty);
+      final deletion = store.pendingChanges().single;
+      expect(deletion['deleted'], isTrue);
+      expect(deletion['baseVersion'], 8);
+      expect(deletion['mutationId'], deletionMutation);
+      store.applySync(
+        {
+          'notes': [
+            {...deletion, 'version': 9},
+          ],
+          'acknowledged': [deletionMutation],
+        },
+        [deletion],
+      );
+      expect(store.initialSnapshot.notes, isEmpty);
+      expect(store.pendingChanges(), isEmpty);
+    },
+  );
+
+  test('An unacknowledged upload cannot advance a newer edit base', () async {
+    final store = await open();
+    await store.save(
+      store.initialSnapshot.editSelected('Upload not acknowledged'),
+    );
+    final sent = store.pendingChanges();
+    await store.save(
+      store.initialSnapshot.editSelected('Keep the pending text'),
+    );
+    store.applySync({
+      'notes': [
+        {...sent.single, 'version': 10},
+      ],
+      'acknowledged': <String>[],
+    }, sent);
+    expect(store.initialSnapshot.selected.text, 'Keep the pending text');
+    expect(store.pendingChanges().single['baseVersion'], 0);
+  });
+
+  test(
+    'Lost upload responses retry the same mutation after edits and restart',
+    () async {
+      final store = await open();
+      store.useProfile('alice');
+      await store.save(
+        store.initialSnapshot.editSelected('Sent before disconnect'),
+      );
+      final first = store.prepareSyncChanges();
+      await store.save(
+        store.initialSnapshot.editSelected('Typed after disconnect'),
+      );
+      final reopened = await open();
+      reopened.useProfile('alice');
+      expect(reopened.prepareSyncChanges(), first);
+      reopened.applySync({
+        'notes': [
+          {...first.single, 'version': 11},
+        ],
+        'acknowledged': [first.single['mutationId']],
+      }, first);
+      final next = reopened.prepareSyncChanges().single;
+      expect(next['text'], 'Typed after disconnect');
+      expect(next['baseVersion'], 11);
+      expect(next['mutationId'], isNot(first.single['mutationId']));
+    },
+  );
+
+  test('New empty and Unicode whitespace drafts never enter uploads', () async {
+    final store = await open();
+    for (final text in ['', ' \t\n', '\u00a0\u2003']) {
+      await store.save(store.initialSnapshot.editSelected(text));
+      expect(store.prepareSyncChanges(), isEmpty);
+      expect(store.initialSnapshot.selected.text, text);
+    }
+  });
+
+  test(
+    'Clearing a saved note deletes its server copy and retains a local draft',
+    () async {
+      final store = await open();
+      await store.save(store.initialSnapshot.editSelected('Previously saved'));
+      final original = store.prepareSyncChanges();
+      store.applySync({
+        'notes': [
+          {...original.single, 'version': 1},
+        ],
+        'acknowledged': [original.single['mutationId']],
+      }, original);
+      final id = store.initialSnapshot.selectedId;
+      await store.save(store.initialSnapshot.editSelected(' \n'));
+      final cleared = store.prepareSyncChanges();
+      expect(cleared.single['deleted'], isTrue);
+      store.applySync({
+        'notes': [
+          {...cleared.single, 'version': 2},
+        ],
+        'acknowledged': [cleared.single['mutationId']],
+      }, cleared);
+      expect(store.prepareSyncChanges(), isEmpty);
+      expect(store.initialSnapshot.selectedId, id);
+      expect(store.initialSnapshot.selected.text.trim(), isEmpty);
+      await store.save(store.initialSnapshot.editSelected('A fresh thought'));
+      final fresh = store.prepareSyncChanges().single;
+      expect(fresh['deleted'], isFalse);
+      expect(fresh['baseVersion'], 2);
+    },
+  );
+
+  test(
+    'Clearing during an upload follows the acknowledgement with a deletion',
+    () async {
+      final store = await open();
+      await store.save(store.initialSnapshot.editSelected('Uploading'));
+      final sent = store.prepareSyncChanges();
+      await store.save(store.initialSnapshot.editSelected(''));
+      expect(store.prepareSyncChanges(), sent);
+      store.applySync({
+        'notes': [
+          {...sent.single, 'version': 1},
+        ],
+        'acknowledged': [sent.single['mutationId']],
+      }, sent);
+      final deletion = store.prepareSyncChanges().single;
+      expect(deletion['deleted'], isTrue);
+      expect(deletion['baseVersion'], 1);
+      expect(store.initialSnapshot.selected.text, isEmpty);
+    },
+  );
+
+  test(
+    'A conflict resolution keeps continued typing on its own copy',
+    () async {
+      final store = await open();
+      store.useProfile('alice');
+      await store.save(store.initialSnapshot.editSelected('My first edit'));
+      final sent = store.prepareSyncChanges();
+      final source = sent.single['id'];
+      await store.save(store.initialSnapshot.editSelected('My continued edit'));
+      store.applySync({
+        'notes': [
+          {...sent.single, 'text': 'Other device edit', 'version': 2},
+          {...sent.single, 'id': 'my-conflict-copy', 'version': 3},
+        ],
+        'resolved': [
+          {
+            'mutationId': sent.single['mutationId'],
+            'sourceId': source,
+            'noteId': 'my-conflict-copy',
+            'version': 3,
+          },
+        ],
+        'acknowledged': [sent.single['mutationId']],
+      }, sent);
+      expect(store.initialSnapshot.selectedId, 'my-conflict-copy');
+      expect(store.initialSnapshot.selected.text, 'My continued edit');
+      expect(
+        store.initialSnapshot.notes.firstWhere((n) => n.id == source).text,
+        'Other device edit',
+      );
+      final next = store.prepareSyncChanges().single;
+      expect(next['id'], 'my-conflict-copy');
+      expect(next['baseVersion'], 3);
+    },
+  );
+
+  test(
+    'Pending count includes deletions and retries once, excluding blank drafts',
+    () async {
+      final store = await open();
+      store.useProfile('alice');
+      final b = Note.create(text: 'B');
+      await store.save(store.initialSnapshot.editSelected('A').add(b));
+      final a = store.initialSnapshot.notes.firstWhere((n) => n.id != b.id);
+      expect(store.pendingSyncCount, 2);
+      final sent = store.prepareSyncChanges();
+      await store.save(
+        store.initialSnapshot.select(a.id).editSelected('A continued'),
+      );
+      expect(store.pendingSyncCount, 2);
+      await store.save(store.initialSnapshot.removeSelected());
+      expect(store.pendingSyncCount, 2);
+      store.applySync({
+        'notes': [
+          for (final c in sent) {...c, 'version': 1},
+        ],
+        'acknowledged': [for (final c in sent) c['mutationId']],
+      }, sent);
+      expect(store.pendingSyncCount, 1);
+      final deletion = store.prepareSyncChanges();
+      expect(deletion.single['deleted'], isTrue);
+      store.applySync({
+        'notes': [
+          {...deletion.single, 'version': 2},
+        ],
+        'acknowledged': [deletion.single['mutationId']],
+      }, deletion);
+      expect(store.pendingSyncCount, 0);
+      await store.save(store.initialSnapshot.add(Note.create()));
+      await store.save(store.initialSnapshot.editSelected(' \t\n'));
+      expect(store.pendingSyncCount, 0);
+      store.useProfile('bob');
+      expect(store.pendingSyncCount, 0);
+    },
+  );
+
+  test('A stale response cannot replace a newer server revision', () async {
+    final store = await open();
+    store.useProfile('alice');
+    final note = Note.create(text: 'Original');
+    Map<String, dynamic> response(String text, int version) => {
+      'notes': [
+        {...note.toJson(), 'text': text, 'version': version, 'deleted': false},
+      ],
+      'acknowledged': <String>[],
+    };
+    store.applySync(response('Latest from another device', 3), []);
+    store.applySync(response('Older server text', 2), []);
+    expect(store.initialSnapshot.selected.text, 'Latest from another device');
+  });
+
+  test(
+    'A genuine concurrent remote edit does not rebase unsent text',
+    () async {
+      final store = await open();
+      await store.save(store.initialSnapshot.editSelected('Sent edit'));
+      final sent = store.pendingChanges();
+      await store.save(
+        store.initialSnapshot.editSelected('Still typing locally'),
+      );
+      store.applySync({
+        'notes': [
+          {...sent.single, 'text': 'Different device edit', 'version': 5},
+        ],
+        'acknowledged': [sent.single['mutationId']],
+      }, sent);
+      expect(store.initialSnapshot.selected.text, 'Still typing locally');
+      expect(store.pendingChanges().single['baseVersion'], 0);
+    },
+  );
 
   test(
     'Remote deletions cannot reappear when the app saves its next snapshot',

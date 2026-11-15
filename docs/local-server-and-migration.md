@@ -1,3 +1,7 @@
+> **Current server, 15 November 2026:** `https://davids-mac-mini.local:8767`.
+> See [Mac mini server administration](mac-mini-server.md).
+> The older port 8766 configuration below is historical; BeneEde now uses that port.
+
 # This Mac’s QJotter server
 
 Installed on 7 November 2026. The server is running independently of Android

@@ -200,6 +200,68 @@ void main() {
     await sb.sync();
     await sa.sync();
     expect(a.initialSnapshot.selected.text, 'Edited from device B 📝');
+    // Exercise repeated uploads while the user continues typing against the
+    // real server's optimistic concurrency checks (not a permissive fake).
+    for (var i = 0; i < 5; i++) {
+      await a.save(a.initialSnapshot.editSelected('Typing $i'));
+      final sent = a.pendingChanges();
+      final reply = await sa.api.sync(sa.session!, sent);
+      await a.save(a.initialSnapshot.editSelected('Typing $i continued'));
+      a.applySync(reply, sent);
+      await sa.sync();
+      await sb.sync();
+      expect(b.initialSnapshot.notes, hasLength(1));
+      expect(b.initialSnapshot.selected.text, 'Typing $i continued');
+      expect(a.pendingChanges(), isEmpty);
+    }
+    // A successful upload whose response is lost must be retried verbatim,
+    // even after further typing. Otherwise its next edit conflicts with itself.
+    await a.save(a.initialSnapshot.editSelected('Accepted, response lost'));
+    final lost = a.prepareSyncChanges();
+    await sa.api.sync(sa.session!, lost); // Intentionally discard the response.
+    await a.save(a.initialSnapshot.editSelected('Continued after disconnect'));
+    expect(a.prepareSyncChanges(), lost);
+    await sa.sync();
+    await sa.sync();
+    await sb.sync();
+    expect(b.initialSnapshot.notes, hasLength(1));
+    expect(b.initialSnapshot.selected.text, 'Continued after disconnect');
+
+    // A real conflict gets one stable copy; continued typing follows that
+    // copy rather than forking the original again on every upload.
+    await a.save(a.initialSnapshot.editSelected('Concurrent device A edit'));
+    await sa.sync();
+    await b.save(b.initialSnapshot.editSelected('Concurrent device B edit'));
+    final conflicting = b.prepareSyncChanges();
+    final conflictReply = await sb.api.sync(sb.session!, conflicting);
+    await b.save(b.initialSnapshot.editSelected('Device B kept typing'));
+    b.applySync(conflictReply, conflicting);
+    final copyId = b.initialSnapshot.selectedId;
+    expect(copyId, isNot(a.initialSnapshot.selectedId));
+    for (var i = 0; i < 3; i++) {
+      await b.save(b.initialSnapshot.editSelected('Continued conflict edit $i'));
+      await sb.sync();
+      await sa.sync();
+      expect(a.initialSnapshot.notes, hasLength(2));
+      expect(b.initialSnapshot.selectedId, copyId);
+    }
+    await b.save(b.initialSnapshot.removeSelected());
+    await sb.sync();
+    await sa.sync();
+
+    // Clearing a synced note removes it from a second device. Typing again
+    // reuses the draft without leaving an empty server entry.
+    final draftId = a.initialSnapshot.selectedId;
+    await a.save(a.initialSnapshot.editSelected(' \t\n'));
+    await sa.sync();
+    await sb.sync();
+    expect(b.initialSnapshot.notes, isEmpty);
+    expect(a.initialSnapshot.selectedId, draftId);
+    await a.save(a.initialSnapshot.editSelected('Edited from device B 📝'));
+    await sa.sync();
+    await sb.sync();
+    expect(b.initialSnapshot.notes, hasLength(1));
+    expect(b.initialSnapshot.selected.text, 'Edited from device B 📝');
     await sa.signOut();
     expect(a.profile, 'device');
     expect(a.initialSnapshot.selected.text, 'Unsigned device note');

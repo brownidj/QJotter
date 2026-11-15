@@ -34,10 +34,18 @@ class FakeAccountApi extends AccountApi {
   @override
   Future<void> checkConnection(String server) async {}
   @override
-  Future<void> resetPassword(String server, String email, String code, String password) async {
-    if (invalidRecovery) throw const AccountError('Invalid or expired recovery code.');
+  Future<void> resetPassword(
+    String server,
+    String email,
+    String code,
+    String password,
+  ) async {
+    if (invalidRecovery) {
+      throw const AccountError('Invalid or expired recovery code.');
+    }
     recovery = [server, email, code, password];
   }
+
   @override
   Future<AccountSession> signIn(
     String server,
@@ -309,7 +317,11 @@ void main() {
       await tester.pumpAndSettle();
       expect(api.submittedEmail, 'alice@example.test');
       expect(find.text('Only on this device'), findsWidgets);
-      expect(find.text('Saved to server'), findsOneWidget);
+      expect(find.text('Saved to server'), findsNothing);
+      expect(
+        find.byTooltip('All notes synced with the server'),
+        findsOneWidget,
+      );
       expect(store.pendingChanges(), isEmpty);
       await tester.tap(find.byTooltip('Settings'));
       await tester.pumpAndSettle();
@@ -356,18 +368,30 @@ void main() {
         await tester.enterText(find.byType(TextField), 'An offline edit');
         await tester.pumpAndSettle();
         expect(
-          find.textContaining('waiting to save to server'),
+          find.descendant(
+            of: find.byKey(const ValueKey('server-sync-led')),
+            matching: find.text('1'),
+          ),
           findsOneWidget,
         );
         expect(store.pendingChanges(), hasLength(1));
         await tester.pump(const Duration(seconds: 1));
         await tester.pumpAndSettle();
-        expect(find.text('Cannot reach the server.'), findsOneWidget);
+        expect(
+          find.byTooltip(
+            '1 note waiting to sync with the server.\nCannot reach the server.',
+          ),
+          findsOneWidget,
+        );
         expect(find.text('An offline edit'), findsWidgets);
         api.offline = false;
         await tester.pump(const Duration(seconds: 30));
         await tester.pumpAndSettle();
-        expect(find.text('Saved to server'), findsOneWidget);
+        expect(find.text('Saved to server'), findsNothing);
+        expect(
+          find.byTooltip('All notes synced with the server'),
+          findsOneWidget,
+        );
         expect(store.pendingChanges(), isEmpty);
       } finally {
         await tester.pumpWidget(const SizedBox.shrink());
@@ -401,52 +425,79 @@ void main() {
     expect(services.session, isNull);
   });
 
-  testWidgets('Recovery validates confirmation, handles invalid codes and returns to sign in', (tester) async {
-    services.saveServerAddress('https://notes.example.test');
-    await tester.pumpWidget(MaterialApp(home: SettingsPage(services: services)));
-    await tester.pumpAndSettle();
-    await tester.scrollUntilVisible(find.text('Forgot password?'), 200,
-        scrollable: find.byType(Scrollable).first);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Forgot password?'));
-    await tester.pumpAndSettle();
-    Future<void> enter(String label, String value) async {
-      final field = find.widgetWithText(TextField, label);
-      if (field.evaluate().isEmpty) {
-        await tester.scrollUntilVisible(field, 160,
-            scrollable: find.byType(Scrollable).first);
+  testWidgets(
+    'Recovery validates confirmation, handles invalid codes and returns to sign in',
+    (tester) async {
+      services.saveServerAddress('https://notes.example.test');
+      await tester.pumpWidget(
+        MaterialApp(home: SettingsPage(services: services)),
+      );
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Forgot password?'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Forgot password?'));
+      await tester.pumpAndSettle();
+      Future<void> enter(String label, String value) async {
+        final field = find.widgetWithText(TextField, label);
+        if (field.evaluate().isEmpty) {
+          await tester.scrollUntilVisible(
+            field,
+            160,
+            scrollable: find.byType(Scrollable).first,
+          );
+        }
+        await tester.ensureVisible(field);
+        await tester.pumpAndSettle();
+        await tester.enterText(field, value);
+        await tester.pumpAndSettle();
       }
-      await tester.ensureVisible(field);
-      await tester.pumpAndSettle();
-      await tester.enterText(field, value);
-      await tester.pumpAndSettle();
-    }
-    Future<void> submit() async {
-      await tester.ensureVisible(find.text('Reset password'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Reset password'));
-      await tester.pumpAndSettle();
-    }
-    await enter('Email', 'alice@example.test');
-    await enter('Recovery code', 'fixture-recovery-code');
-    await enter('New password', 'new test passphrase only');
-    await enter('Confirm new password', 'mismatched test passphrase');
-    await submit();
-    expect(find.text('The passwords do not match.'), findsOneWidget);
-    expect(api.recovery, isNull);
-    await enter('Confirm new password', 'new test passphrase only');
-    api.invalidRecovery = true;
-    await submit();
-    expect(find.text('Invalid or expired recovery code.'), findsOneWidget);
-    api.invalidRecovery = false;
-    await submit();
-    expect(api.recovery, ['https://notes.example.test', 'alice@example.test', 'fixture-recovery-code', 'new test passphrase only']);
-    expect(find.textContaining('Password reset. Sign in with your new password.'), findsOneWidget);
-    expect(find.widgetWithText(TextField, 'Recovery code'), findsNothing);
-    expect(tester.widget<TextField>(find.widgetWithText(TextField, 'Password')).controller!.text, isEmpty);
-    expect(services.session, isNull);
-    expect(services.busy, isFalse);
-  });
+
+      Future<void> submit() async {
+        await tester.ensureVisible(find.text('Reset password'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Reset password'));
+        await tester.pumpAndSettle();
+      }
+
+      await enter('Email', 'alice@example.test');
+      await enter('Recovery code', 'fixture-recovery-code');
+      await enter('New password', 'new test passphrase only');
+      await enter('Confirm new password', 'mismatched test passphrase');
+      await submit();
+      expect(find.text('The passwords do not match.'), findsOneWidget);
+      expect(api.recovery, isNull);
+      await enter('Confirm new password', 'new test passphrase only');
+      api.invalidRecovery = true;
+      await submit();
+      expect(find.text('Invalid or expired recovery code.'), findsOneWidget);
+      api.invalidRecovery = false;
+      await submit();
+      expect(api.recovery, [
+        'https://notes.example.test',
+        'alice@example.test',
+        'fixture-recovery-code',
+        'new test passphrase only',
+      ]);
+      expect(
+        find.textContaining('Password reset. Sign in with your new password.'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(TextField, 'Recovery code'), findsNothing);
+      expect(
+        tester
+            .widget<TextField>(find.widgetWithText(TextField, 'Password'))
+            .controller!
+            .text,
+        isEmpty,
+      );
+      expect(services.session, isNull);
+      expect(services.busy, isFalse);
+    },
+  );
 
   test('An interrupted first upload survives restart without duplicating legacy notes', () async {
     await store.save(store.initialSnapshot.editSelected('Legacy note'));

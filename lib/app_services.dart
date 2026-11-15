@@ -265,6 +265,7 @@ class AccountApi {
       'password': password,
     });
   }
+
   Future<void> logout(AccountSession session) async {
     await request(session.server, 'logout', {}, token: session.token);
   }
@@ -334,6 +335,7 @@ class AppServices extends ChangeNotifier {
     this.automaticSync = true,
     this.defaultServer = const String.fromEnvironment('NOTEFILE_SERVER'),
     this.defaultCertificate = '',
+    this.migrateFromServer = '',
     this.defaultCertificateBase64 = const String.fromEnvironment(
       'NOTEFILE_SERVER_CERTIFICATE_BASE64',
     ),
@@ -349,12 +351,15 @@ class AppServices extends ChangeNotifier {
   final AccountApi api;
   final bool automaticSync;
   final String defaultServer, defaultCertificate, defaultCertificateBase64;
+  final String migrateFromServer;
   AccountSession? session;
   StartupStatus startupStatus = const StartupStatus(supported: false);
   String? startupError;
   String syncStatus = 'Sign in to save notes to your server.';
   bool busy = false;
   bool syncing = false;
+  bool syncConfirmed = false;
+  int get pendingSyncCount => session == null ? 0 : store.pendingSyncCount;
   int notebookRevision = 0;
   Timer? _debounce, _poll;
   Future<void>? _syncFuture;
@@ -379,6 +384,7 @@ class AppServices extends ChangeNotifier {
   }
 
   Future<void> initialize() async {
+    syncConfirmed = false;
     String? configuredServer;
     if (defaultServer.isNotEmpty) {
       try {
@@ -409,6 +415,53 @@ class AppServices extends ChangeNotifier {
     }
     try {
       session = await vault.read();
+      // A migration is explicitly supplied by the installed app, never by an
+      // untrusted server response. Require pinned HTTPS for the destination.
+      if (configuredServer != null &&
+          migrateFromServer.isNotEmpty &&
+          configuredServer.startsWith('https://') &&
+          store.setting('certificate:$configuredServer') != null) {
+        final source = AccountApi.validateServer(migrateFromServer);
+        if (session?.server == source) {
+          final previous = session!;
+          final next = AccountSession(
+            server: configuredServer,
+            userId: previous.userId,
+            email: previous.email,
+            token: previous.token,
+          );
+          try {
+            // Verify TLS and the transferred session before touching the cache.
+            await api.sync(next, []);
+            await vault.write(next);
+            try {
+              store.migrateServerProfile(
+                previous.profile,
+                next.profile,
+                server: next.server,
+              );
+            } catch (_) {
+              await vault.write(previous);
+              rethrow;
+            }
+            session = next;
+            store.database.execute(
+              "DELETE FROM settings WHERE key='serverMigrationError'",
+            );
+          } catch (error) {
+            final detail = error is AccountError
+                ? error.message
+                : error is PlatformException
+                ? 'Secure storage error: ${error.code}'
+                : 'Local migration error: ${error.runtimeType}';
+            store.setSetting('serverMigrationError', detail);
+            syncStatus =
+                'Could not switch to the new server yet. $detail Your notes remain on this device; restart QJotter to retry.';
+          }
+        } else if (session == null && store.setting('server') == source) {
+          store.setSetting('server', configuredServer);
+        }
+      }
       if (session != null) {
         store.useProfile(session!.profile, importDeviceNotes: true);
       }
@@ -532,6 +585,7 @@ class AppServices extends ChangeNotifier {
         rethrow;
       }
       session = next;
+      syncConfirmed = false;
       notebookRevision++;
       await _syncNow();
     } finally {
@@ -557,6 +611,7 @@ class AppServices extends ChangeNotifier {
         rethrow;
       }
       session = null;
+      syncConfirmed = false;
       notebookRevision++;
       syncStatus = 'Signed out. Sign in to access your server notes.';
       _notify();
@@ -622,10 +677,11 @@ class AppServices extends ChangeNotifier {
     syncStatus = 'Syncing…';
     _notify();
     try {
-      final sent = store.pendingChanges();
+      final sent = store.prepareSyncChanges();
       final response = await api.sync(account, sent);
       if (_disposed || session != account) return;
       store.applySync(response, sent);
+      syncConfirmed = true;
       notebookRevision++;
       if (store.pendingChanges().isEmpty) {
         syncStatus = 'Saved to server';
@@ -634,6 +690,7 @@ class AppServices extends ChangeNotifier {
         syncStatus = 'Saved on this device · waiting to save to server…';
       }
     } catch (error) {
+      syncConfirmed = false;
       syncStatus = error is AccountError ? error.message : 'Sync failed. Your notes remain on this device; retry when connected.';
     } finally {
       syncing = false;

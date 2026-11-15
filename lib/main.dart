@@ -10,8 +10,11 @@ import 'package:path_provider/path_provider.dart';
 
 import 'note_actions.dart';
 import 'notes_store.dart';
+import 'sqlite_notes_store.dart';
 import 'app_services.dart';
 import 'app_identity.dart';
+import 'server_configuration.dart';
+import 'sync_indicator.dart';
 import 'settings_page.dart';
 
 const quickCaptureChannel = MethodChannel('notefile/quick_capture');
@@ -30,6 +33,9 @@ Future<void> main() async {
       ? null
       : AppServices(
           store: store,
+          defaultServer: appServerAddress,
+          defaultCertificate: appServerCertificate,
+          migrateFromServer: retiredServerAddress,
           vault: SecureSessionVault(),
           startup: PlatformStartupManager(),
         );
@@ -215,7 +221,10 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
     final snapshot = _notes;
     final revision = ++_saveRevision;
     setState(() => _saveStatus = 'Saving…');
-    _pendingSave = _pendingSave.then((_) async {
+    // SQLite commits synchronously when save is called. Do not defer the
+    // write to a future: a sync response could otherwise reload older text
+    // between this keystroke and its queued save.
+    Future<void> save() async {
       try {
         await widget.store.save(snapshot);
         if (!mounted || revision != _saveRevision) return;
@@ -224,7 +233,11 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
         if (!mounted || revision != _saveRevision) return;
         setState(() => _saveStatus = 'Could not save notes');
       }
-    });
+    }
+
+    _pendingSave = widget.store is SqliteNotesStore
+        ? save()
+        : _pendingSave.then((_) => save());
   }
 
   void _editNote(String text) {
@@ -297,6 +310,7 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
         ),
         actions: [
           TextButton(
+            autofocus: true,
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
@@ -613,7 +627,15 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
         const Text(
           'The trash button is disabled when no note is highlighted in the visible list.',
         ),
-        if (_saveStatus != null) ...[
+        const SizedBox(height: 8),
+        const Text(
+          'The small green light at the top left means all notes are saved to the server. '
+          'An orange light shows how many records are waiting to sync, including deletions. '
+          'Empty new drafts are not counted. A grey light means syncing has not been confirmed. '
+          'Hover over the light, or press and hold it on a phone, for details.',
+        ),
+        if (_saveStatus != null &&
+            (_showingHelp || _saveStatus != 'Could not save notes')) ...[
           const SizedBox(height: 8),
           Text(_saveStatus!),
         ],
@@ -667,6 +689,17 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
     }
     return Scaffold(
       appBar: AppBar(
+        automaticallyImplyLeading: false,
+        leadingWidth: 64,
+        leading: services == null
+            ? null
+            : SyncIndicator(
+                pendingRecords: services.pendingSyncCount,
+                confirmed:
+                    services.syncConfirmed &&
+                    _saveStatus != 'Could not save notes',
+                status: _saveStatus ?? services.syncStatus,
+              ),
         actions: [
           if (widget.services != null)
             IconButton(
@@ -782,18 +815,10 @@ class _QuickCapturePageState extends State<QuickCapturePage> {
                     ],
                   ),
                 ),
-                if (!_showingHelp && services != null)
+                if (!_showingHelp && _saveStatus == 'Could not save notes')
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
-                    child: Tooltip(
-                      message: _saveStatus ?? services.syncStatus,
-                      child: Text(
-                        _saveStatus ?? services.syncStatus,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
+                    padding: const EdgeInsets.all(4),
+                    child: Text(_saveStatus!),
                   ),
                 if (!_showingHelp) _footer(wide),
               ],

@@ -52,6 +52,10 @@ class Api:
                 CREATE TABLE IF NOT EXISTS operations (
                     user_id TEXT NOT NULL REFERENCES users(id), mutation_id TEXT NOT NULL,
                     PRIMARY KEY(user_id, mutation_id));
+                CREATE TABLE IF NOT EXISTS operation_results (
+                    user_id TEXT NOT NULL REFERENCES users(id), mutation_id TEXT NOT NULL,
+                    source_id TEXT NOT NULL, note_id TEXT NOT NULL, version INTEGER NOT NULL,
+                    PRIMARY KEY(user_id, mutation_id));
                 CREATE TABLE IF NOT EXISTS password_resets (
                     token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
                     expires INTEGER NOT NULL);
@@ -192,12 +196,29 @@ class Api:
             user_id, _ = self._authorized(db, token)
             revision = db.execute('SELECT revision FROM users WHERE id=?', (user_id,)).fetchone()[0]
             acknowledged = []
+            resolved = []
+            # Retire legacy empty entries as tombstones so every client removes them.
+            for row in db.execute('SELECT * FROM notes WHERE user_id=? AND deleted=0', (user_id,)).fetchall():
+                if not row['text'].strip():
+                    revision += 1
+                    db.execute('UPDATE notes SET deleted=1,version=? WHERE user_id=? AND id=?',
+                               (revision, user_id, row['id']))
             for change in changes:
+                if not change['text'].strip():
+                    change = {**change, 'deleted': True}
                 mutation = change['mutationId']
                 acknowledged.append(mutation)
                 if db.execute('SELECT 1 FROM operations WHERE user_id=? AND mutation_id=?', (user_id, mutation)).fetchone():
+                    result = db.execute('SELECT * FROM operation_results WHERE user_id=? AND mutation_id=?', (user_id, mutation)).fetchone()
+                    if result:
+                        resolved.append({'mutationId': mutation, 'sourceId': result['source_id'],
+                                         'noteId': result['note_id'], 'version': result['version']})
                     continue
                 old = db.execute('SELECT * FROM notes WHERE user_id=? AND id=?', (user_id, change['id'])).fetchone()
+                if old is None and change['deleted']:
+                    # A blank draft must never become a server entry.
+                    db.execute('INSERT INTO operations VALUES (?,?)', (user_id, mutation))
+                    continue
                 conflict = (old['version'] if old else 0) != change['baseVersion']
                 note_id = change['id']
                 if conflict and change['deleted']:
@@ -214,6 +235,10 @@ class Api:
                     updated_at=excluded.updated_at, deleted=excluded.deleted, version=excluded.version''',
                     (user_id, note_id, change['text'], change['createdAt'], change['updatedAt'], int(change['deleted']), revision))
                 db.execute('INSERT INTO operations VALUES (?,?)', (user_id, mutation))
+                db.execute('INSERT INTO operation_results VALUES (?,?,?,?,?)',
+                           (user_id, mutation, change['id'], note_id, revision))
+                resolved.append({'mutationId': mutation, 'sourceId': change['id'],
+                                 'noteId': note_id, 'version': revision})
             quota = db.execute('SELECT COUNT(*), COALESCE(SUM(length(CAST(text AS BLOB))),0) FROM notes WHERE user_id=?', (user_id,)).fetchone()
             if quota[0] > 1000 or quota[1] > MAX_BODY:
                 raise ApiError(413, 'This account exceeds the prototype sync limit of 1,000 notes or 8 MB.')
@@ -221,7 +246,7 @@ class Api:
             notes = [{'id': row['id'], 'text': row['text'], 'createdAt': row['created_at'],
                       'updatedAt': row['updated_at'], 'deleted': bool(row['deleted']), 'version': row['version']}
                      for row in db.execute('SELECT * FROM notes WHERE user_id=? ORDER BY version', (user_id,))]
-            return {'notes': notes, 'acknowledged': acknowledged}
+            return {'notes': notes, 'acknowledged': acknowledged, 'resolved': resolved}
 
     def handle(self, route, data, token=None, peer='local'):
         if route in ('register', 'login'):

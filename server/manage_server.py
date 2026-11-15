@@ -61,6 +61,10 @@ def write_plist(config):
                  '--tls-key', config['private_key']]
     if config['allow_registration']:
         arguments.append('--allow-registration')
+    if config.get('keep_awake', True):
+        # Hold an idle-sleep assertion only for the server's lifetime. The
+        # display can sleep, and no administrator-level power setting changes.
+        arguments = ['/usr/bin/caffeinate', '-i', *arguments]
     plist = {'Label': LABEL, 'ProgramArguments': arguments,
              'WorkingDirectory': str(ROOT), 'RunAtLoad': True, 'KeepAlive': True,
              'ThrottleInterval': 10, 'Umask': 0o077,

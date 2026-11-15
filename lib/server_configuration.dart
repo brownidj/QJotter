@@ -1,0 +1,31 @@
+// Public connection details for the current private QJotter installation.
+// This contains only the public certificate, never a server key or password.
+const appServerAddress = 'https://davids-mac-mini.local:8767';
+const retiredServerAddress = 'https://davids-macbook-pro.local:8766';
+const appServerCertificate = r'''-----BEGIN CERTIFICATE-----
+MIIEXTCCAsWgAwIBAgIUJBB+qHFebINpwOxx/21QOF472rgwDQYJKoZIhvcNAQEL
+BQAwIDEeMBwGA1UEAwwVRGF2aWRzLU1hYy1taW5pLmxvY2FsMB4XDTI2MTEwNzA2
+MTM1N1oXDTI5MDIwOTA2MTM1N1owIDEeMBwGA1UEAwwVRGF2aWRzLU1hYy1taW5p
+LmxvY2FsMIIBojANBgkqhkiG9w0BAQEFAAOCAY8AMIIBigKCAYEAqy5bjmS8LgRV
+3/8Se4+waih0cLgYY/Hxi7ZcGJDhcAjp63aPfU8OhOqCE/E109Av1SmslkmJSH9g
+pVoWPpbC5e2DMSX5OJr7mARUkG4u//etFNAtFYsAgzTXr66/iNaR054KmYHCzCDp
+rHQGJ2rCiHgs3AcvR5WH0ZnPkLFX5Wo5uvwfC/TZ3uyOr7Digc0k6xP94mguEhEZ
+VnD+oS7zd0Wo0n0kyPGGUA1xaIVxIIg55U7WJNq/27qNY8LUuFUBj7m/ts2LVYpP
+kD+5xyyXiEX6AIG8PTaA2nKKc8rHIuQbTwhDHIE5PWVK0/DqEA0kE6Alk47UwKp2
+clIPwR/IjP0rpaC023PueuKz3Nf0T1sfylHuL0NCYdA3ljeUREHW6GdHOgyJtST+
+8ASgR03E3hGXVZjuqdVrazXkG4cu9zWkQPcJTlMWIfEWq9dMlYtkXtZymU8kavef
+OOF8qrrJuGnim8Lappt/4hyvmqaMrhQHqcH3NN8QfyE63UAW5Kj1AgMBAAGjgY4w
+gYswDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCBaAwEwYDVR0lBAwwCgYIKwYB
+BQUHAwEwNwYDVR0RBDAwLoIJbG9jYWxob3N0ghVEYXZpZHMtTWFjLW1pbmkubG9j
+YWyHBH8AAAGHBMCoMqQwHQYDVR0OBBYEFAwbzur1u85Odr5/czUcLHZbqRWmMA0G
+CSqGSIb3DQEBCwUAA4IBgQBExXIkJUfAWvDgTUz+y27/JDFM5rVR0j8yOv7RRBtR
+0vXrrMNE0A8epslVsXkem3DoXMaFwFRbhdpj+9iMICguBQ80QDY++/4X1N3Uwwsq
+DWRsaQwZjYIk8xWtytae0ncDgiLGaVHS+3je2oj94mxEZBIH+VCfE+jY3ibf9H6M
+38D1tKhwioGx4/rawiiAQxVQTmMnXHetiYg3G6cDGwJ8uU7bcB4mir1tEEW1chJ9
+WeC/ttw0VNjiT86v+ttVb2eFjKhGcU7apqwdyVgKuNr0Bceqb2N6vseimr3Q9sTn
+FyjiQ9JP32TcXTDtYZAS4PRAMGQxj5ShKROqMYdQ5cyvaDyBWozpjJIiA6mmF1fm
+f8tdq9D7kY1z8Bo+zHktc2tRXs4CkiwypQzNrGFQfjw7DCoPyIHeZjWnJIBCnXIK
+VJfp1/1KgxUx+JdO4FEGHYQpZWu/C87erkDQfwpcJ8adT+jJbzk2mzwENLfs/k7M
+Gy3zrFiM+LqFAl8aZ8huOaA=
+-----END CERTIFICATE-----
+''';

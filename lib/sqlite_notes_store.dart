@@ -41,6 +41,9 @@ class SqliteNotesStore implements NotesStore {
         );
         db.execute('PRAGMA user_version = 1');
       });
+      db.execute('''CREATE TABLE IF NOT EXISTS sync_outbox (
+        profile TEXT NOT NULL, id TEXT NOT NULL, change_json TEXT NOT NULL,
+        PRIMARY KEY(profile, id))''');
       if (db.select("SELECT id FROM profiles WHERE id = 'device'").isEmpty) {
         // Parse before inserting a profile: failed migrations can be retried safely.
         final json = File('${directory.path}/notes.json');
@@ -102,6 +105,63 @@ class SqliteNotesStore implements NotesStore {
       profile = previous;
       rethrow;
     }
+  }
+
+  /// Copy the active cache and outbox when the same server database moves.
+  /// Preserve an older destination cache separately, rather than uploading it.
+  /// The marker prevents a later retry from recopying a stale source cache.
+  void migrateServerProfile(String source, String target, {String? server}) {
+    if (source == target) return;
+    transaction(() {
+      final marker = 'serverMigration:$source:$target';
+      if (setting(marker) != null) return;
+      final current = database.select(
+        'SELECT selected_id FROM profiles WHERE id=?',
+        [source],
+      ).firstOrNull;
+      if (current == null) throw StateError('Missing migration source profile');
+      final existing = database.select(
+        'SELECT selected_id FROM profiles WHERE id=?',
+        [target],
+      ).firstOrNull;
+      if (existing != null) {
+        final archive = '$target:before-migration:${const Uuid().v4()}';
+        database.execute('INSERT INTO profiles VALUES (?,?)', [
+          archive,
+          existing['selected_id'],
+        ]);
+        database.execute('UPDATE notes SET profile=? WHERE profile=?', [
+          archive,
+          target,
+        ]);
+        database.execute('UPDATE sync_outbox SET profile=? WHERE profile=?', [
+          archive,
+          target,
+        ]);
+        database.execute('DELETE FROM profiles WHERE id=?', [target]);
+      }
+      database.execute('INSERT INTO profiles VALUES (?,?)', [
+        target,
+        current['selected_id'],
+      ]);
+      database.execute(
+        'INSERT INTO notes SELECT ?,id,text,created_at,updated_at,deleted,dirty,server_version,mutation_id FROM notes WHERE profile=?',
+        [target, source],
+      );
+      database.execute(
+        'INSERT INTO sync_outbox SELECT ?,id,change_json FROM sync_outbox WHERE profile=?',
+        [target, source],
+      );
+      final placeholder = setting('capturePlaceholder:$source');
+      if (placeholder != null) {
+        setSetting('capturePlaceholder:$target', placeholder);
+      }
+      if (setting('deviceNotesAccount') == source) {
+        setSetting('deviceNotesAccount', target);
+      }
+      if (server != null) setSetting('server', server);
+      setSetting(marker, 'complete');
+    });
   }
 
   // Claim legacy device notes for the first authenticated account only. Keep
@@ -256,19 +316,58 @@ class SqliteNotesStore implements NotesStore {
   }
 
   List<Map<String, dynamic>> pendingChanges() => database
-      .select(
-        "SELECT * FROM notes WHERE profile=? AND dirty=1 AND NOT (text='' AND deleted=0 AND server_version=0)",
-        [profile],
+      .select('SELECT * FROM notes WHERE profile=? AND dirty=1', [profile])
+      .where(
+        (row) =>
+            (row['text'] as String).trim().isNotEmpty ||
+            row['deleted'] == 1 ||
+            (row['server_version'] as int) > 0,
       )
       .map(
         (row) => <String, dynamic>{
           ..._note(row).toJson(),
-          'deleted': row['deleted'] == 1,
+          'deleted':
+              row['deleted'] == 1 || (row['text'] as String).trim().isEmpty,
           'baseVersion': row['server_version'],
           'mutationId': row['mutation_id'],
         },
       )
       .toList();
+
+  /// Count records, not mutations: a retry and a newer edit of the same note
+  /// share one LED count. Empty never-uploaded drafts are excluded.
+  int get pendingSyncCount => <String>{
+    for (final change in pendingChanges()) change['id'] as String,
+    for (final row in database.select(
+      'SELECT id FROM sync_outbox WHERE profile=?',
+      [profile],
+    ))
+      row['id'] as String,
+  }.length;
+
+  /// Persist the exact upload before sending it. If the response is lost,
+  /// retry that mutation before sending text typed in the meantime.
+  List<Map<String, dynamic>> prepareSyncChanges() => transaction(() {
+    final changes = <String, Map<String, dynamic>>{
+      for (final row in database.select(
+        'SELECT id,change_json FROM sync_outbox WHERE profile=?',
+        [profile],
+      ))
+        row['id'] as String:
+            jsonDecode(row['change_json'] as String) as Map<String, dynamic>,
+    };
+    for (final change in pendingChanges()) {
+      final id = change['id'] as String;
+      if (changes.containsKey(id)) continue;
+      database.execute('INSERT INTO sync_outbox VALUES (?,?,?)', [
+        profile,
+        id,
+        jsonEncode(change),
+      ]);
+      changes[id] = change;
+    }
+    return changes.values.toList();
+  });
 
   /// A response must never overwrite an edit made while the request was in flight.
   void applySync(
@@ -278,10 +377,44 @@ class SqliteNotesStore implements NotesStore {
     final acknowledged = (response['acknowledged'] as List)
         .cast<String>()
         .toSet();
-    final mutations = {
-      for (final change in sent) change['id']: change['mutationId'],
-    };
+    final mutations = {for (final change in sent) change['id']: change};
     transaction(() {
+      final resolutions = <String, Map<String, dynamic>>{};
+      for (final raw in (response['resolved'] as List? ?? const [])) {
+        final result = raw as Map<String, dynamic>;
+        final source = result['sourceId'] as String;
+        final uploaded = mutations[source];
+        if (uploaded == null ||
+            result['mutationId'] != uploaded['mutationId'] ||
+            !acknowledged.contains(result['mutationId'])) {
+          continue;
+        }
+        final target = result['noteId'] as String;
+        resolutions[target] = result;
+        if (source != target) {
+          // Follow our own conflict copy. Continued typing belongs to this
+          // copy, not to the other device's version of the original note.
+          final local = database.select(
+            'SELECT * FROM notes WHERE profile=? AND id=?',
+            [profile, source],
+          ).firstOrNull;
+          if (local != null && local['dirty'] == 1) {
+            database.execute('DELETE FROM notes WHERE profile=? AND id=?', [
+              profile,
+              target,
+            ]);
+            database.execute(
+              'UPDATE notes SET id=?,server_version=? WHERE profile=? AND id=?',
+              [target, result['version'], profile, source],
+            );
+            database.execute(
+              'UPDATE profiles SET selected_id=? WHERE id=? AND selected_id=?',
+              [target, profile, source],
+            );
+          }
+          mutations[target] = uploaded;
+        }
+      }
       final remoteIds = (response['notes'] as List)
           .map((item) => item['id'])
           .toSet();
@@ -307,13 +440,33 @@ class SqliteNotesStore implements NotesStore {
       for (final item in response['notes'] as List) {
         final note = Note.fromJson(item as Map<String, dynamic>);
         final local = database.select(
-          'SELECT dirty, mutation_id FROM notes WHERE profile=? AND id=?',
+          'SELECT dirty, mutation_id, server_version, text FROM notes WHERE profile=? AND id=?',
           [profile, note.id],
         ).firstOrNull;
         if (local != null &&
+            (item['version'] as int) < (local['server_version'] as int)) {
+          continue;
+        }
+        final uploaded = mutations[note.id];
+        if (local != null &&
             local['dirty'] == 1 &&
-            (local['mutation_id'] != mutations[note.id] ||
+            (local['mutation_id'] != uploaded?['mutationId'] ||
                 !acknowledged.contains(local['mutation_id']))) {
+          // An earlier edit of THIS note was accepted while the user kept
+          // typing. Keep the new text and mutation, but base its next upload
+          // on that accepted revision. A genuine conflict has different
+          // remote text, so must not advance the local edit's base version.
+          final resolvedVersion = resolutions[note.id]?['version'];
+          if (uploaded != null &&
+              acknowledged.contains(uploaded['mutationId']) &&
+              (resolvedVersion != null ||
+                  (uploaded['text'] == note.text &&
+                      uploaded['deleted'] == (item['deleted'] == true)))) {
+            database.execute(
+              'UPDATE notes SET server_version=? WHERE profile=? AND id=?',
+              [resolvedVersion ?? item['version'], profile, note.id],
+            );
+          }
           continue;
         }
         database.execute(
@@ -329,11 +482,25 @@ class SqliteNotesStore implements NotesStore {
             note.text,
             note.createdAt.toIso8601String(),
             note.updatedAt.toIso8601String(),
-            item['deleted'] == true ? 1 : 0,
+            item['deleted'] == true &&
+                    !(local != null &&
+                        (local['text'] as String).trim().isEmpty &&
+                        uploaded?['deleted'] == true &&
+                        acknowledged.contains(uploaded?['mutationId']))
+                ? 1
+                : 0,
             item['version'],
             const Uuid().v4(),
           ],
         );
+      }
+      for (final change in sent) {
+        if (acknowledged.contains(change['mutationId'])) {
+          database.execute(
+            'DELETE FROM sync_outbox WHERE profile=? AND id=? AND change_json=?',
+            [profile, change['id'], jsonEncode(change)],
+          );
+        }
       }
     });
   }

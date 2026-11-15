@@ -316,6 +316,7 @@ void main() {
     );
     await tester.tap(find.text('?'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Retry shortcut'));
     await tester.tap(find.text('Retry shortcut'));
     await tester.pumpAndSettle();
     expect(
@@ -346,6 +347,7 @@ void main() {
     );
     await tester.tap(find.text('?'));
     await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Retry shortcut'));
     await tester.tap(find.text('Retry shortcut'));
     await tester.pumpAndSettle();
     expect(
